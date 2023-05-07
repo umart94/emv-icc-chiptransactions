@@ -1,0 +1,53 @@
+Some HSM Basics and How They Work...
+
+(Originally from HSM basic text file corresponding to email dated Sep 24, 2005 12:03 PM, Subject: HSM - help on standards.)
+
+Each Hardware Security Module (HSM) has its own Master Key and can be called an LMK or KSK or whatever the HSM vendor calls it. I will call it the KSK (key storage key).
+
+Every key you generate will be encrypted under this KSK. In real life you will never know the clear value of the KSK, the HSM will store it on a chip card. Lets say the KSK is 0123456789ABCDEF. For all my examples I am going to use a single length key.
+
+Now consider you want the Triton ATM to have a TMK (terminal Master Key) of 0909090909090909 stored on it. You would go to the HSM and enter this clear value and obtain a cryptogram (0909090909090909 encrypted under 0123456789ABCDEF). The encrypted value of the TMK will be 3F85C66266E0C409 and this is what you will use as nothing should be in the clear. For simulation this is alright but in reality you want to let the HSM generate a random key.
+
+Now you need to generate a PIN Working Key (I call it the KWP). This is the key used by the ATM to encrypt the PIN block and send it to you in the a withdrawal request. Let's say the Clear PIN Key is 0808080808080808 and the encrypted value (encrypted under KSK) is 086F9A1D74C94D4E. For simulation this is alright but in reality you want to let the HSM generate a random key and you can exchange this key at regular intervals with the ATM.
+
+This KWP gets exchanged with the ATM. The process is as follows. You would need to send the KWP encrypted under the KSK (086F9A1D74C94D4E) and the TMK encrypted under KSK (3F85C66266E0C409) to the HSM and tell it to give you a the KWP under the TMK. The HSM will decrypt the KWP and TMK to get clear values of each and then encrypt the KWP using the TMK (basically you are encrypting 0808080808080808 with a key of 0909090909090909).
+
+The clear KWP encrypted under clear TMK is 10772D40FAD24257 and this is what you would send to the ATM for it to encrypt the PIN block it sends you.
+
+The above is a pretty simplistic approach. To make things more secure HSM's use variants. A variant is a hex value for each type of key. For example, a KWP can have a variant 1 which has a hex value of say 0800000000000000, what this does is the clear TMK is XOR'd with this value and then the result is used to encrypt the clear KWP. The equivalent hex variant for double length keys would be 08000000000000000800000000000000 i.e. the single length variant repeats itself. This is generally not used by ATMs but most networks will use this.
+
+PIN Blocks... and PIN Translations
+
+PIN blocks come in various flavors, ISO-0,ISO-1 , OEM-1 etc.. These flavors are algorithms on how the PIN should packed with additional data like pan and padding characters. See the following URL for PIN block algorithms, (http://www-03.ibm.com/security/cryptocards/pdfs/IBM_4758_Basic_Services_Release_2_52.pdf )
+
+The ATM has the TMK (entered by a supervisor at the ATM) you also have this value and the KWP encrypted under the TMK that we sent it in the key exchange message. The ATM will decrypt the KWP with the TMK and will have the clear KWP (08's). Now the ATM and we have the same TMK and KWP in the clear. The ATM will form the PIN block (I think its ISO-0 for Triton) and encrypt it with the clear KWP. For example: PIN lock format : ISO-0 PAN = 5555555555555555 PIN = 1234 KWP = 0808080808080808 Encrypted PIN block = B07F65762F0F4701
+
+Once your application receives it you would send this the PIN block (B07F65762F0F4701), the KWP under the KSK (086F9A1D74C94D4E) ,pan and the PIN block format. The HSM will get the KWP in the clear by decrypting it with the KSK, then decrypt the PIN block using this clear KWP and extract the PIN by reversing the PIN block formation algorithm.
+
+If you do need to translate the PIN, that is, using the PIN you got above and forming a PIN block that your network expects, you encrypt the PIN block using a PIN working key that you share with the network. Assuming you have Zone Master Key (ZMK) shared with the network and exchanged the Zone PIN Key with the network (this is kind of similar to how we dealt with the keys on the ATM side of things).
+
+Check Digits...
+
+One thing that you may need to pass along are the Check Digits (the exception is that Triton ATMs do not need this) but you will most probably need it when you do key exchanges with the network.
+
+The HSM will generate check digits along with the cryptogram. So for my TMK of 0909090909090909 the check digits would be obtained by encrypting 0000000000000000 with a key of 0909090909090909. You will get D6A875A7A871DF70 and usually the first 4 to 6 digits are used.
+
+Writing the Simulator.
+
+The Java Crypto API has methods that generate single and double length keys. The API has methods for encrypting and decrypting data so you do not need to delve into doing the DES part yourself.
+
+The JPOS API has very good support and can help you generate keys, encrypt, decrypt, form PIN blocks and translate PIN blocks. Take a look at jpos\src\ext-examples\smadapter\Test.java and \jpos\src\ext\org\jpos\security\jceadapter\JCESecurityModule.java
+
+If you are going to MAC messages then I would recommend using the Bouncy Castle implementation of the Crypto API as I never could validate the MAC sent by terminals as the MAC algorithm that was being used by the ATM (Diebold/NCR) was not available in Sun's Crypto implementation.
+
+Since you want the ability to swap out your Sim with the real HSM, you will need the write twp implementations: one for the Sim and the other to communicate with the real HSM. You will need the API to talk to the HSM, that is, send it commands and parameters over TCP/UDP. This API is proprietary and you will need to buy it from the HSM vendor.
+
+All the encrypted values used above have been obtained after true DES encryption.
+
+KSK = KEY STORAGE KEY is the master key of the HSM KWP = PIN WORKING KEY is the share key with the ATM or the network TMK = TERMINAL MASTER KEY is the master key shred between the ATM and you and all keys shared between the two of you, for example, MAC, KWP are encrypted under this key. ZMK = ZONE MASTER KEY is the master key shared between you and the network and all keys shared between the two of you, for example, MAC, KWP are encrypted under this key. Clear KSK = 0123456789ABCDEF Clear KWP = 0808080808080808 Clear TMK = 0909090909090909 TMK encrypted under KSK= 3F85C66266E0C409 KWP encrypted under KSK= 086F9A1D74C94D4E Clear KWP encrypted under clear TMK = 10772D40FAD24257
+
+We hope this helps in understanding the functionality of an HSM and also helps you in writing yourself a simulator.
+
+We have not gone into explaining PIN verification, but this will use another key called the PIN Verification Key that was used to generate the PIN offsets that are on the Card itself (or file somewhere) ...but the process should be like getting the PIN and performing the algorithm for generating the offset and matching it with the on on file or in Track 2.
+
+See also HSM basics continued
